@@ -2,47 +2,38 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # --- SIDINSTÄLLNINGAR ---
-st.set_page_config(page_title="VD:ns Algofond", page_icon="📈", layout="wide")
-st.title("📈 VD:ns Algofond - Kontrollpanel (OMXS30)")
+st.set_page_config(page_title="VD:ns Algofond 2.0", page_icon="🏢", layout="wide")
+st.title("🏢 VD:ns Algofond - Multi-Strategi Terminal")
 
-# --- SIDOMENY (PARAMETRAR) ---
-st.sidebar.header("⚙️ VD:ns Reglage")
-SMA_KORT = st.sidebar.number_input("Hjärnan: Kort Trend (SMA)", value=40)
-SMA_LANG = st.sidebar.number_input("Hjärnan: Lång Trend (SMA)", value=150)
-VIX_PANIK = st.sidebar.number_input("Hjärnan: VIX Paniknivå", value=35.0)
-RSI_KOP = st.sidebar.number_input("Krypskytten: RSI Köpgräns", value=25.0)
-SMA_EXIT = st.sidebar.number_input("Krypskytten: Exit-snitt (SMA)", value=5)
+# --- VD:ns AKTIE-UNIVERSUM (Svenska Storbolag) ---
+OMXS_TICKERS = [
+    "ABB.ST", "ALFA.ST", "ASSA-B.ST", "ATCO-A.ST", "AZN.ST", 
+    "BOL.ST", "ERIC-B.ST", "EVO.ST", "HM-B.ST", "INVE-B.ST", 
+    "NIBE-B.ST", "SAND.ST", "SEB-A.ST", "SWED-A.ST", "VOLV-B.ST",
+    "TELIA.ST", "HEXA-B.ST", "SAAB-B.ST", "SCA-B.ST", "SHB-A.ST"
+]
 
-@st.cache_data(ttl=900) # Sparar datan i 15 min (900 sek) så appen laddar blixtsnabbt
-def ladda_data():
-    # Hämta OMXS30 (^OMX) och VIX (^VIX)
-    omx = yf.download('^OMX', period='3y', progress=False)
-    vix = yf.download('^VIX', period='3y', progress=False)
+# --- DATA MOTORER ---
+@st.cache_data(ttl=900)
+def ladda_index_data():
+    omx = yf.download('^OMX', period='2y', progress=False)
+    vix = yf.download('^VIX', period='2y', progress=False)
     
-    # Säkerställ kompatibilitet med nyare yfinance-uppdateringar
-    if isinstance(omx.columns, pd.MultiIndex):
-        omx_close = omx['Close'].iloc[:, 0]
-    else:
-        omx_close = omx['Close']
+    if isinstance(omx.columns, pd.MultiIndex): omx_close = omx['Close'].iloc[:, 0]
+    else: omx_close = omx['Close']
         
-    if isinstance(vix.columns, pd.MultiIndex):
-        vix_close = vix['Close'].iloc[:, 0]
-    else:
-        vix_close = vix['Close']
+    if isinstance(vix.columns, pd.MultiIndex): vix_close = vix['Close'].iloc[:, 0]
+    else: vix_close = vix['Close']
     
     df = pd.DataFrame({'OMXS30': omx_close, 'VIX': vix_close}).dropna()
     df.index = df.index.tz_localize(None)
     
-    # --- BERÄKNINGAR ---
-    df['SMA_Kort'] = df['OMXS30'].rolling(window=SMA_KORT).mean()
-    df['SMA_Lang'] = df['OMXS30'].rolling(window=SMA_LANG).mean()
-    df['SMA_Exit'] = df['OMXS30'].rolling(window=SMA_EXIT).mean()
+    df['SMA_40'] = df['OMXS30'].rolling(window=40).mean()
+    df['SMA_150'] = df['OMXS30'].rolling(window=150).mean()
+    df['SMA_5'] = df['OMXS30'].rolling(window=5).mean()
     
-    # Krypskyttens panikmätare (RSI-2)
     delta = df['OMXS30'].diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
@@ -51,84 +42,136 @@ def ladda_data():
     rs = ema_up / ema_down
     df['RSI_2'] = 100 - (100 / (1 + rs))
     
-    # Beräkna historiska signaler för grafen
-    # Röd växel = under båda SMA ELLER VIX > Panik
-    df['Rod_Vaxel'] = ((df['OMXS30'] < df['SMA_Kort']) & (df['OMXS30'] < df['SMA_Lang'])) | (df['VIX'] > VIX_PANIK)
-    # Köp = Inte röd växel OCH RSI < Köpgräns
-    df['Kop_Signal'] = (~df['Rod_Vaxel']) & (df['RSI_2'] < RSI_KOP)
-    
+    df['Rod_Vaxel'] = ((df['OMXS30'] < df['SMA_40']) & (df['OMXS30'] < df['SMA_150'])) | (df['VIX'] > 35)
     return df.dropna()
 
-st.write("⏳ Synkar med Stockholmsbörsen och Wall Street...")
-df = ladda_data()
-
-if not df.empty:
-    # --- ANALYSERA DAGENS LÄGE ---
-    dagens_pris = df['OMXS30'].iloc[-1]
-    dagens_sma_kort = df['SMA_Kort'].iloc[-1]
-    dagens_sma_lang = df['SMA_Lang'].iloc[-1]
-    dagens_vix = df['VIX'].iloc[-1]
-    dagens_rsi = df['RSI_2'].iloc[-1]
-    dagens_exit = df['SMA_Exit'].iloc[-1]
-
-    rod_vaxel = df['Rod_Vaxel'].iloc[-1]
-    kop_signal = df['Kop_Signal'].iloc[-1]
-    salj_signal = (dagens_pris > dagens_exit) or rod_vaxel
-
-    # --- DASHBOARD UI (TOPPEN) ---
-    st.markdown("---")
-    st.markdown("### 🚦 Systemstatus: Idag kl 17:20")
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("Sverige (OMXS30)", f"{dagens_pris:.2f}")
-        
-    with col2:
-        st.metric("Skräckindex (VIX)", f"{dagens_vix:.2f}", "Krasch-varning!" if dagens_vix > VIX_PANIK else "Lugnt", delta_color="inverse")
-
-    with col3:
-        if rod_vaxel:
-            st.error("🧠 HJÄRNAN: RÖD VÄXEL\n\nKraschrisk! Krypskytten vilar.")
-        else:
-            st.success("🧠 HJÄRNAN: GRÖN VÄXEL\n\nMarknaden är frisk.")
-            
-    with col4:
-        st.metric(label="Krypskytten (RSI-2)", value=f"{dagens_rsi:.1f}", delta=f"{dagens_rsi - RSI_KOP:.1f} (Mål: < {RSI_KOP})", delta_color="inverse")
-        
-    st.markdown("---")
+@st.cache_data(ttl=3600) # Uppdaterar aktierna max 1 gång i timmen för prestanda
+def ladda_aktie_data():
+    data = []
     
-    st.subheader("🚨 Dagens Action (kl 17:20)")
-    if kop_signal:
-        st.error("🔥 **SKARPT LÄGE! KÖP x3!** Öppna Montrose och köp BULL OMX X3 NU!")
-    elif salj_signal:
-        st.warning("💰 **SÄLJ-SIGNAL!** Om du ligger inne: Sälj certifikatet och slussa vinsten till Kärnan!")
+    # Ladda ner alla priser i ett svep (för att appen ska starta fort)
+    hist_all = yf.download(OMXS_TICKERS, period='1y', progress=False)
+    
+    if isinstance(hist_all.columns, pd.MultiIndex):
+        hist_close = hist_all['Close']
     else:
-        st.info("☕ **AVVAKTA.** Inga larm idag. Låt Kärnportföljen jobba i fred.")
+        hist_close = hist_all
+        
+    for ticker in OMXS_TICKERS:
+        try:
+            if ticker not in hist_close.columns:
+                continue
+            
+            hist = hist_close[ticker].dropna()
+            if len(hist) < 100: continue
+            
+            # Hämta utdelningen direkt från Yahoo
+            info = yf.Ticker(ticker).info
+            div_yield = info.get('dividendYield', 0)
+            if div_yield is None: div_yield = info.get('trailingAnnualDividendYield', 0)
+            if div_yield is None: div_yield = 0
+            
+            pris = float(hist.iloc[-1])
+            
+            # Momentum: Hur mycket har aktien stigit de senaste 3 månaderna? (Ca 63 handelsdagar)
+            pris_3m = float(hist.iloc[-63]) if len(hist) >= 63 else float(hist.iloc[0])
+            momentum = ((pris / pris_3m) - 1) * 100
+            
+            sma_50 = float(hist.rolling(50).mean().iloc[-1])
+            sma_150 = float(hist.rolling(150).mean().iloc[-1])
+            
+            trend = "🟢 Upptrend" if pris > sma_150 else "🔴 Nedtrend"
+            kopsignal_swing = (pris > sma_50) and (pris > sma_150)
+            
+            data.append({
+                'Aktie': ticker.replace('.ST', ''),
+                'Pris (kr)': round(pris, 2),
+                'Momentum 3M (%)': round(momentum, 2),
+                'Utdelning (%)': round(div_yield * 100, 2),
+                'Trend': trend,
+                'Köpbar Swing (Mellan)': kopsignal_swing,
+                'SMA_150': sma_150
+            })
+        except Exception as e:
+            continue
+    return pd.DataFrame(data)
 
-    st.markdown("---")
+st.write("⏳ Synkar med Stockholmsbörsen & Skannar Storbolagen...")
+df_index = ladda_index_data()
+df_aktier = ladda_aktie_data()
 
-    # --- INTERAKTIV GRAF (PLOTLY) ---
-    st.subheader("📊 Interaktiv Marknadsradar")
+# --- FLIK-SYSTEMET ---
+tab1, tab2, tab3 = st.tabs(["🎯 Krypskytten (Index)", "🏄‍♂️ Mellanportföljen (Swing)", "💰 Kärnan (Utdelningar)"])
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
+# ==========================================
+# FLIK 1: KRYPSKYTTEN
+# ==========================================
+with tab1:
+    st.header("🎯 Krypskytten: Letar Panik i Index")
+    st.write("Din dagliga rutin kl 17:20. Ligger i kontanter, anfaller vid panik med x3 hävstång.")
+    
+    if not df_index.empty:
+        dagens_pris = df_index['OMXS30'].iloc[-1]
+        dagens_vix = df_index['VIX'].iloc[-1]
+        dagens_rsi = df_index['RSI_2'].iloc[-1]
+        rod_vaxel = df_index['Rod_Vaxel'].iloc[-1]
+        salj_signal = (dagens_pris > df_index['SMA_5'].iloc[-1]) or rod_vaxel
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Sverige (OMXS30)", f"{dagens_pris:.2f}")
+        col2.metric("Skräckindex (VIX)", f"{dagens_vix:.2f}", "Fara!" if dagens_vix > 35 else "Lugnt", delta_color="inverse")
+        col3.metric("Panik-mätaren (RSI-2)", f"{dagens_rsi:.1f}", "KÖP-LÄGE!" if dagens_rsi < 25 and not rod_vaxel else "Avvakta", delta_color="inverse")
 
-    # Pris och Glidande Medelvärden
-    fig.add_trace(go.Scatter(x=df.index, y=df['OMXS30'], mode='lines', name='OMXS30', line=dict(color='white')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_Lang'], mode='lines', name='Trend (SMA 150)', line=dict(color='dodgerblue', dash='dot')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_Exit'], mode='lines', name='Exit (SMA 5)', line=dict(color='orange')), row=1, col=1)
+        st.markdown("---")
+        if rod_vaxel:
+            st.error("🧠 HJÄRNAN: RÖD VÄXEL. Marknaden är i krasch-läge. Krypskytten har utegångsförbud.")
+        elif dagens_rsi < 25:
+            st.success("🔥 KÖP-SIGNAL! RSI är i botten. Köp BULL OMX X3 på Montrose!")
+        elif salj_signal:
+            st.warning("💰 SÄLJ-SIGNAL! Priset har studsat. Sälj certifikatet och slussa vinsten!")
+        else:
+            st.info("☕ Avvakta. Inget extremt läge på index just nu.")
 
-    # Leta upp historiska köp-signaler för att måla ut dem i grafen
-    buy_dates = df[df['Kop_Signal']].index
-    buy_prices = df.loc[buy_dates, 'OMXS30']
-    fig.add_trace(go.Scatter(x=buy_dates, y=buy_prices, mode='markers', name='Historiska Köp', marker=dict(color='lime', size=12, symbol='triangle-up')), row=1, col=1)
+# ==========================================
+# FLIK 2: MELLANPORTFÖLJEN
+# ==========================================
+with tab2:
+    st.header("🏄‍♂️ Mellanportföljen (Swing Trading)")
+    st.write("Här hittar vi aktierna som rör sig snabbast just nu. Vi hyr in oss i några månader och rider vågen. Sälj när trenden dör!")
+    
+    if not df_aktier.empty:
+        # Sortera ut de som är köpbara (över SMA50 och SMA150) och ranka efter Momentum
+        vinnare = df_aktier[df_aktier['Köpbar Swing (Mellan)'] == True].sort_values(by='Momentum 3M (%)', ascending=False)
+        forlorare = df_aktier[df_aktier['Köpbar Swing (Mellan)'] == False].sort_values(by='Momentum 3M (%)', ascending=True)
 
-    # RSI-Mätaren i botten
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI_2'], mode='lines', name='RSI-2', line=dict(color='purple')), row=2, col=1)
-    fig.add_hline(y=RSI_KOP, line_dash="dash", line_color="lime", row=2, col=1, annotation_text="KÖP-ZON")
+        st.markdown("### 🚀 Topp 5 Hetaste Aktierna (Köp-lista)")
+        st.write("Dessa bolag har starkast underliggande dragkraft på hela börsen just nu. Köp 2-3 av dessa till din Mellanportfölj!")
+        
+        if not vinnare.empty:
+            st.dataframe(vinnare[['Aktie', 'Pris (kr)', 'Momentum 3M (%)', 'Trend']].head(5), hide_index=True, use_container_width=True)
+        else:
+            st.warning("Inga aktier har en stark positiv trend just nu. Håll kassan!")
 
-    fig.update_layout(height=600, template="plotly_dark", hovermode="x unified", margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
+        st.markdown("### 🗑️ Sälj-Varning (Fallande momentum)")
+        st.write("Äger du någon av dessa i Mellanportföljen? Sälj dem direkt. Deras trend har brutits.")
+        if not forlorare.empty:
+            st.dataframe(forlorare[['Aktie', 'Pris (kr)', 'Momentum 3M (%)', 'Trend']].head(5), hide_index=True, use_container_width=True)
 
-    st.caption("Uppdateras automatiskt. Din VD-rutin: Kolla appen kl 17:20 varje vardag.")
-else:
-    st.error("Kunde inte hämta data från Yahoo Finance just nu.")
+# ==========================================
+# FLIK 3: KÄRNAN
+# ==========================================
+with tab3:
+    st.header("💰 Kärnportföljen (Utdelnings-Skannern)")
+    st.write("Här placerar du vinsten från Krypskytten. Vi letar efter storbolag med hög direktavkastning, men **Hjärnan blockerar bolag i krasch**.")
+    
+    if not df_aktier.empty:
+        # Sortera på utdelning, men BARA bolag i Upptrend
+        utdelnings_kungar = df_aktier[df_aktier['Trend'] == "🟢 Upptrend"].sort_values(by='Utdelning (%)', ascending=False)
+        
+        st.success("🏦 Godkända Utdelningsaktier (I positiv trend)")
+        st.dataframe(utdelnings_kungar[['Aktie', 'Pris (kr)', 'Utdelning (%)', 'Trend']].head(8), hide_index=True, use_container_width=True)
+        
+        # Visa value traps
+        value_traps = df_aktier[df_aktier['Trend'] == "🔴 Nedtrend"].sort_values(by='Utdelning (%)', ascending=False)
+        st.error("🚨 Varningslistan: Hög utdelning men aktien KRASCHAR (Värdefälla/Swedbank-fällan)")
+        st.dataframe(value_traps[['Aktie', 'Pris (kr)', 'Utdelning (%)', 'Trend']].head(5), hide_index=True, use_container_width=True)
